@@ -6,12 +6,76 @@ Public Const R_SQUARED_MIN As Double = 0.98
 Public Const INHIBITION_THRESHOLD As Double = 75
 Public Const RECOVERY_THRESHOLD As Double = 1
 
+Const BUTTON_CAPTION = "qPCR Calculator"
+
+' Dynamic target detection structure
+Type TargetInfo
+    Name As String
+    IsRecoveryControl As Boolean
+    HasStandardCurve As Boolean
+    slope As Double
+    rSquared As Double
+    intercept As Double
+    curveValid As Boolean
+End Type
+
+
+'========================================
+'====  CREATE BUTTONS ON COMMAND BAR ====
+'========================================
+
+
+Sub Auto_Open()
+    '------------VARIABLES----------
+    Dim CmdBar As CommandBar
+    Dim CmdBarMenu As CommandBarControl
+    Dim CmdBarMenuItem As CommandBarControl
+    '---------------------------------
+    
+    Set CmdBar = Application.CommandBars("Worksheet Menu Bar")
+    Set CmdBarMenu = CmdBar.Controls("Tools")
+    
+    ' Remove existing button if it exists
+    On Error Resume Next
+        Application.DisplayAlerts = False
+        CmdBarMenu.Controls(BUTTON_CAPTION).Delete
+        Application.DisplayAlerts = True
+    On Error GoTo 0
+    
+    ' Add the qPCR Calculator button
+    Set CmdBarMenuItem = CmdBarMenu.Controls.Add(Type:=msoControlButton)
+    With CmdBarMenuItem
+         .Caption = BUTTON_CAPTION
+         .OnAction = "ProcessN1_qPCRData"
+    End With
+    
+End Sub
+
+Sub Auto_Close()
+    Dim CmdBar As CommandBar
+    Dim CmdBarMenu As CommandBarControl
+    
+    Set CmdBar = Application.CommandBars("Worksheet Menu Bar")
+    Set CmdBarMenu = CmdBar.Controls("Tools")
+    
+    ' Remove the button when closing
+    On Error Resume Next
+        Application.DisplayAlerts = False
+        CmdBarMenu.Controls(BUTTON_CAPTION).Delete
+        Application.DisplayAlerts = True
+    On Error GoTo 0
+    
+End Sub
+
+
+
+
 
 
 
 Sub ProcessN1_qPCRData()
     
-    ' Enhanced N1 qPCR Data Analysis for QuantStudio CSV Files
+    ' Enhanced qPCR Data Analysis with Dynamic Target Detection
     ' Creates new workbook with proper naming convention and file management
     
     Dim ws As Worksheet
@@ -36,6 +100,10 @@ Sub ProcessN1_qPCRData()
     Dim colTask As Long, colCq As Long, colCqMean As Long, colCqStd As Long
     Dim colQuantity As Long, colQuantityMean As Long, colQuantityStd As Long
     Dim colSlope As Long, colRSquared As Long, colIntercept As Long
+    
+    ' Dynamic target detection
+    Dim detectedTargets() As TargetInfo
+    Dim recoveryControlTarget As String
     
     ' Check if there's an active worksheet
     If ActiveSheet Is Nothing Then
@@ -82,6 +150,10 @@ Sub ProcessN1_qPCRData()
     ' Find last row with data
     lastRow = ws.Cells(ws.Rows.Count, colSampleName).End(xlUp).Row
     
+    ' Detect targets automatically and determine recovery control
+    Call DetectTargetsAndRecoveryControl(ws, dataStartRow, lastRow, colTargetName, colSlope, colRSquared, colIntercept, _
+                                        detectedTargets, recoveryControlTarget)
+    
     ' Create new workbook with proper structure
     Set newWorkbook = CreateAnalysisWorkbook(ws, analystInitials)
     Set rawWs = newWorkbook.Worksheets("Raw_CSV")
@@ -93,43 +165,24 @@ Sub ProcessN1_qPCRData()
     ' Extract metadata and add analysis info
     Call ExtractMetadata(ws, resultsWs, analystName)
     
-    ' Determine which targets are present
-    Dim targetsPresent As String
-    targetsPresent = DetermineTargets(ws, dataStartRow, lastRow, colTargetName)
-    
-    ' Get standard curve parameters for N1 and Mengo (if present)
-    Dim n1Slope As Double, n1RSquared As Double, n1Intercept As Double, n1CurveValid As Boolean
-    Dim mengoSlope As Double, mengoRSquared As Double, mengoIntercept As Double, mengoCurveValid As Boolean
-    
-    Call GetStandardCurveParams(ws, dataStartRow, lastRow, colSlope, colRSquared, colIntercept, _
-                               "N1", n1Slope, n1RSquared, n1Intercept, n1CurveValid, SLOPE_MIN, SLOPE_MAX, R_SQUARED_MIN)
-    
-    If InStr(targetsPresent, "Mengo") > 0 Then
-        Call GetStandardCurveParams(ws, dataStartRow, lastRow, colSlope, colRSquared, colIntercept, _
-                                   "Mengo", mengoSlope, mengoRSquared, mengoIntercept, mengoCurveValid, SLOPE_MIN, SLOPE_MAX, R_SQUARED_MIN)
-    Else
-        mengoCurveValid = False
-    End If
-    
     ' Check for positive NTCs
     Dim ntcIssues As String
     ntcIssues = CheckNTCs(ws, dataStartRow, lastRow, colSampleName, colTargetName, colTask, colCqMean)
     
-    ' Process samples with full QC
-    Call ProcessSamplesWithQC(ws, resultsWs, dataStartRow, lastRow, colSampleName, colTargetName, _
-                             colTask, colCqMean, colQuantityMean, colQuantityStd, _
-                             n1Slope, n1RSquared, n1Intercept, n1CurveValid, _
-                             mengoSlope, mengoRSquared, mengoIntercept, mengoCurveValid, _
-                             initialSampleVolume, concentratedVolume, processControlVolume, _
-                             extractionElutionVolume, qpcrTemplateVolume, _
-                             INHIBITION_THRESHOLD, RECOVERY_THRESHOLD, ntcIssues)
+    ' Process samples with dynamic QC
+    Call ProcessSamplesWithDynamicQC(ws, resultsWs, dataStartRow, lastRow, colSampleName, colTargetName, _
+                                    colTask, colCqMean, colQuantityMean, colQuantityStd, _
+                                    detectedTargets, recoveryControlTarget, _
+                                    initialSampleVolume, concentratedVolume, processControlVolume, _
+                                    extractionElutionVolume, qpcrTemplateVolume, _
+                                    INHIBITION_THRESHOLD, RECOVERY_THRESHOLD, ntcIssues)
     
     ' Format results worksheet
     Call FormatResultsWorksheet(resultsWs)
     
-    ' Generate filename and save as temporary file
+    ' Generate filename with detected targets and save as temporary file
     Dim fileName As String
-    fileName = GenerateFileName(analystInitials, targetsPresent)
+    fileName = GenerateFileNameFromTargets(analystInitials, detectedTargets)
     
     ' Save the workbook as a temporary file
     Call SaveAsTemporary(newWorkbook, fileName)
@@ -140,13 +193,715 @@ Sub ProcessN1_qPCRData()
     ' Show completion message with instructions
     MsgBox "Analysis complete!" & vbCrLf & vbCrLf & _
            "A new workbook has been created with:" & vbCrLf & _
-           "� Raw_CSV sheet (original data)" & vbCrLf & _
-           "� Results sheet (analysis results)" & vbCrLf & vbCrLf & _
+           "- Raw_CSV sheet (original data)" & vbCrLf & _
+           "- Results sheet (analysis results)" & vbCrLf & vbCrLf & _
+           "Detected targets: " & GetTargetSummary(detectedTargets) & vbCrLf & _
+           "Recovery control: " & recoveryControlTarget & vbCrLf & vbCrLf & _
            "The file has been saved as a temporary file." & vbCrLf & _
            "Please use 'Save As' to save it to your desired location." & vbCrLf & vbCrLf & _
            "Suggested filename: " & fileName, vbInformation, "Analysis Complete"
     
 End Sub
+
+Sub DetectTargetsAndRecoveryControl(ws As Worksheet, dataStartRow As Long, lastRow As Long, _
+                                   colTargetName As Long, colSlope As Long, colRSquared As Long, colIntercept As Long, _
+                                   ByRef detectedTargets() As TargetInfo, ByRef recoveryControlTarget As String)
+    
+    ' Detect all unique targets and their properties
+    Dim i As Long
+    Dim targetName As String
+    Dim uniqueTargets As Collection
+    Dim target As TargetInfo
+    Dim targetCount As Integer
+    Dim hasMengo As Boolean
+    
+    Set uniqueTargets = New Collection
+    hasMengo = False
+    
+    ' First pass: collect unique targets
+    For i = dataStartRow + 1 To lastRow
+        targetName = UCase(Trim(ws.Cells(i, colTargetName).Value))
+        
+        If targetName <> "" Then
+            ' Try to add to collection (will fail silently if already exists)
+            On Error Resume Next
+            uniqueTargets.Add targetName, targetName
+            On Error GoTo 0
+            
+            ' Check for Mengo
+            If targetName = "MENGO" Then hasMengo = True
+        End If
+    Next i
+    
+    ' Convert collection to array and analyse each target
+    targetCount = uniqueTargets.Count
+    ReDim detectedTargets(1 To targetCount)
+    
+    For i = 1 To uniqueTargets.Count
+        targetName = uniqueTargets(i)
+        
+        ' Initialize target info
+        detectedTargets(i).Name = targetName
+        detectedTargets(i).IsRecoveryControl = False
+        detectedTargets(i).HasStandardCurve = False
+        
+        ' Check for standard curve parameters
+        Call GetStandardCurveParams(ws, dataStartRow, lastRow, colSlope, colRSquared, colIntercept, _
+                                   targetName, detectedTargets(i).slope, detectedTargets(i).rSquared, _
+                                   detectedTargets(i).intercept, detectedTargets(i).curveValid, _
+                                   SLOPE_MIN, SLOPE_MAX, R_SQUARED_MIN)
+        
+        If detectedTargets(i).slope <> 0 Then
+            detectedTargets(i).HasStandardCurve = True
+        End If
+    Next i
+    
+    ' Determine recovery control target
+    If hasMengo Then
+        recoveryControlTarget = "MENGO"
+        ' Mark Mengo as recovery control
+        For i = 1 To targetCount
+            If detectedTargets(i).Name = "MENGO" Then
+                detectedTargets(i).IsRecoveryControl = True
+                Exit For
+            End If
+        Next i
+    Else
+        ' Ask user about recovery control
+        recoveryControlTarget = AskUserForRecoveryControl(detectedTargets)
+        
+        ' Mark the selected target as recovery control
+        For i = 1 To targetCount
+            If UCase(detectedTargets(i).Name) = UCase(recoveryControlTarget) Then
+                detectedTargets(i).IsRecoveryControl = True
+                Exit For
+            End If
+        Next i
+    End If
+    
+End Sub
+
+Function AskUserForRecoveryControl(detectedTargets() As TargetInfo) As String
+    
+    ' Ask user if a recovery control was included and which target it is
+    Dim response As Integer
+    Dim targetList As String
+    Dim selectedTarget As String
+    Dim i As Integer
+    
+    ' Build list of detected targets (excluding obvious analytical targets)
+    targetList = ""
+    For i = 1 To UBound(detectedTargets)
+        If detectedTargets(i).Name <> "N1" And detectedTargets(i).Name <> "N2" And _
+           Not (InStr(detectedTargets(i).Name, "EC") > 0) Then
+            If targetList <> "" Then targetList = targetList & ", "
+            targetList = targetList & detectedTargets(i).Name
+        End If
+    Next i
+    
+    ' Ask if recovery control was included
+    response = MsgBox("Mengo virus recovery control not detected." & vbCrLf & vbCrLf & _
+                     "Was a different recovery control included in this assay?" & vbCrLf & vbCrLf & _
+                     "Detected targets: " & targetList, vbYesNo + vbQuestion, "Recovery Control")
+    
+    If response = vbYes Then
+        ' Ask which target is the recovery control
+        selectedTarget = InputBox("Which target is the recovery control?" & vbCrLf & vbCrLf & _
+                                 "Available targets:" & vbCrLf & targetList, _
+                                 "Select Recovery Control Target", "")
+        
+        ' Validate selection
+        If selectedTarget <> "" Then
+            For i = 1 To UBound(detectedTargets)
+                If UCase(detectedTargets(i).Name) = UCase(selectedTarget) Then
+                    AskUserForRecoveryControl = UCase(selectedTarget)
+                    Exit Function
+                End If
+            Next i
+            
+            ' If not found, show error and ask again
+            MsgBox "Target '" & selectedTarget & "' not found. Please check spelling.", vbExclamation
+            AskUserForRecoveryControl = AskUserForRecoveryControl(detectedTargets)
+        Else
+            AskUserForRecoveryControl = ""
+        End If
+    Else
+        AskUserForRecoveryControl = ""
+    End If
+    
+End Function
+
+Function GetTargetSummary(detectedTargets() As TargetInfo) As String
+    
+    ' Create a summary string of detected targets
+    Dim summary As String
+    Dim i As Integer
+    
+    summary = ""
+    For i = 1 To UBound(detectedTargets)
+        If summary <> "" Then summary = summary & ", "
+        summary = summary & detectedTargets(i).Name
+        If detectedTargets(i).IsRecoveryControl Then summary = summary & " (Recovery)"
+    Next i
+    
+    GetTargetSummary = summary
+    
+End Function
+
+Function GenerateFileNameFromTargets(analystInitials As String, detectedTargets() As TargetInfo) As String
+    
+    ' Generate filename from detected targets
+    Dim dateStr As String
+    Dim targetStr As String
+    Dim fileName As String
+    Dim i As Integer
+    
+    dateStr = Format(Date, "yyyymmdd")
+    targetStr = ""
+    
+    ' Build target string from detected targets (excluding EC-RNA controls)
+    For i = 1 To UBound(detectedTargets)
+        If Not (InStr(detectedTargets(i).Name, "EC") > 0) Then
+            If targetStr <> "" Then targetStr = targetStr & "_"
+            targetStr = targetStr & detectedTargets(i).Name
+        End If
+    Next i
+    
+    If targetStr = "" Then targetStr = "Unknown"
+    
+    fileName = dateStr & "-" & analystInitials & "-" & targetStr & ".xlsx"
+    GenerateFileNameFromTargets = fileName
+    
+End Function
+
+Sub ProcessSamplesWithDynamicQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow As Long, lastRow As Long, _
+                               colSampleName As Long, colTargetName As Long, colTask As Long, colCqMean As Long, _
+                               colQuantityMean As Long, colQuantityStd As Long, _
+                               detectedTargets() As TargetInfo, recoveryControlTarget As String, _
+                               initialSampleVolume As Double, concentratedVolume As Double, processControlVolume As Double, _
+                               extractionElutionVolume As Double, qpcrTemplateVolume As Double, _
+                               INHIBITION_THRESHOLD, RECOVERY_THRESHOLD, ntcIssues As String)
+    
+    Dim i As Long
+    Dim currentRow As Long
+    Dim sampleName As String
+    Dim baseSampleName As String
+    Dim targetName As String
+    Dim task As String
+    Dim quantityMean As Double
+    Dim quantityStd As Double
+    Dim cqMean As Double
+    Dim dilutionFactor As Double
+    
+    ' Conversion factors
+    Dim rnaConcentrationFactor As Double
+    Dim sampleConcentrationFactor As Double
+    Dim totalConcentrationFactor As Double
+    
+    rnaConcentrationFactor = extractionElutionVolume / qpcrTemplateVolume
+    sampleConcentrationFactor = 1000 / concentratedVolume
+    totalConcentrationFactor = rnaConcentrationFactor * sampleConcentrationFactor
+    
+    ' Collections to group samples
+    Dim uniqueSamples As Collection
+    Set uniqueSamples = New Collection
+    
+    ' Find primary analytical target (first non-control target)
+    Dim primaryTarget As String
+    primaryTarget = ""
+    For i = 1 To UBound(detectedTargets)
+        If Not detectedTargets(i).IsRecoveryControl And Not (InStr(detectedTargets(i).Name, "EC") > 0) Then
+            primaryTarget = detectedTargets(i).Name
+            Exit For
+        End If
+    Next i
+    
+    ' First pass: collect unique samples based on primary target
+    For i = dataStartRow + 1 To lastRow
+        sampleName = ws.Cells(i, colSampleName).Value
+        targetName = UCase(ws.Cells(i, colTargetName).Value)
+        task = UCase(ws.Cells(i, colTask).Value)
+        
+        ' Skip empty rows, standards, and controls; focus on primary target
+        If sampleName <> "" And Not IsControl(sampleName, task) And targetName = primaryTarget Then
+            baseSampleName = GetBaseSampleName(sampleName)
+            
+            ' Try to add to unique samples collection
+            On Error Resume Next
+            uniqueSamples.Add baseSampleName, baseSampleName
+            On Error GoTo 0
+        End If
+    Next i
+    
+    ' Add standard curve QC section
+    currentRow = resultsWs.Cells(resultsWs.Rows.Count, 1).End(xlUp).Row + 2
+    resultsWs.Cells(currentRow, 1).Value = "Standard Curve Quality Control:"
+    resultsWs.Cells(currentRow, 1).Font.Bold = True
+    currentRow = currentRow + 1
+    
+    ' Display QC for each target with standard curves
+    For i = 1 To UBound(detectedTargets)
+        If detectedTargets(i).HasStandardCurve Then
+            resultsWs.Cells(currentRow, 1).Value = detectedTargets(i).Name & " Standard Curve:"
+            resultsWs.Cells(currentRow, 1).Font.Bold = True
+            currentRow = currentRow + 1
+            
+            resultsWs.Cells(currentRow, 1).Value = "Slope:"
+            resultsWs.Cells(currentRow, 2).Value = Format(detectedTargets(i).slope, "0.000")
+            resultsWs.Cells(currentRow, 3).Value = "Required: " & SLOPE_MIN & " to " & SLOPE_MAX
+            resultsWs.Cells(currentRow, 4).Value = IIf(detectedTargets(i).slope >= SLOPE_MIN And detectedTargets(i).slope <= SLOPE_MAX, "PASS", "FAIL")
+            currentRow = currentRow + 1
+            
+            resultsWs.Cells(currentRow, 1).Value = "R²:"
+            resultsWs.Cells(currentRow, 2).Value = Format(detectedTargets(i).rSquared, "0.000")
+            resultsWs.Cells(currentRow, 3).Value = "Required: ≥" & R_SQUARED_MIN
+            resultsWs.Cells(currentRow, 4).Value = IIf(detectedTargets(i).rSquared >= R_SQUARED_MIN, "PASS", "FAIL")
+            currentRow = currentRow + 1
+            
+            resultsWs.Cells(currentRow, 1).Value = "Overall Status:"
+            resultsWs.Cells(currentRow, 2).Value = IIf(detectedTargets(i).curveValid, "VALID", "INVALID")
+            currentRow = currentRow + 2
+        End If
+    Next i
+    
+    ' NTC Status
+    If ntcIssues <> "" Then
+        resultsWs.Cells(currentRow, 1).Value = "NTC Issues:"
+        resultsWs.Cells(currentRow, 1).Font.Bold = True
+        resultsWs.Cells(currentRow, 1).Font.Color = RGB(255, 0, 0)
+        currentRow = currentRow + 1
+        resultsWs.Cells(currentRow, 1).Value = ntcIssues
+        currentRow = currentRow + 1
+    Else
+        resultsWs.Cells(currentRow, 1).Value = "NTC Status: PASS (No amplification detected)"
+        resultsWs.Cells(currentRow, 1).Font.Color = RGB(0, 128, 0)
+        currentRow = currentRow + 1
+    End If
+    currentRow = currentRow + 1
+    
+    ' Processing parameters
+    resultsWs.Cells(currentRow, 1).Value = "Processing Parameters:"
+    resultsWs.Cells(currentRow, 1).Font.Bold = True
+    currentRow = currentRow + 1
+    
+    resultsWs.Cells(currentRow, 1).Value = "Initial Sample Volume (ml):"
+    resultsWs.Cells(currentRow, 2).Value = initialSampleVolume
+    currentRow = currentRow + 1
+    
+    resultsWs.Cells(currentRow, 1).Value = "Concentrated Volume (ml):"
+    resultsWs.Cells(currentRow, 2).Value = concentratedVolume
+    currentRow = currentRow + 1
+    
+    resultsWs.Cells(currentRow, 1).Value = "RNA Elution Volume (ul):"
+    resultsWs.Cells(currentRow, 2).Value = extractionElutionVolume
+    currentRow = currentRow + 1
+    
+    resultsWs.Cells(currentRow, 1).Value = "qPCR Template Volume (ul):"
+    resultsWs.Cells(currentRow, 2).Value = qpcrTemplateVolume
+    currentRow = currentRow + 1
+    
+    resultsWs.Cells(currentRow, 1).Value = "Base Concentration Factor:"
+    resultsWs.Cells(currentRow, 2).Value = Format(totalConcentrationFactor, "0.0")
+    currentRow = currentRow + 3
+    
+    ' Create results table header
+    resultsWs.Cells(currentRow, 1).Value = "Sample Results (" & primaryTarget & "):"
+    resultsWs.Cells(currentRow, 1).Font.Bold = True
+    currentRow = currentRow + 1
+    
+    ' Table headers - adjust based on whether recovery control is available
+    resultsWs.Cells(currentRow, 1).Value = "Sample Name"
+    resultsWs.Cells(currentRow, 2).Value = "Dilution Factor"
+    resultsWs.Cells(currentRow, 3).Value = "Cq Mean"
+    resultsWs.Cells(currentRow, 4).Value = "Quantity Mean"
+    resultsWs.Cells(currentRow, 5).Value = "Final Conc. (copies/L)"
+    
+    Dim colIndex As Integer
+    colIndex = 6
+    
+    ' Add RT-PCR inhibition column if EC-RNA is present
+    Dim hasECRNA As Boolean
+    hasECRNA = HasECRNATarget(detectedTargets)
+    If hasECRNA Then
+        resultsWs.Cells(currentRow, colIndex).Value = "RT-PCR Inhibition (%)"
+        colIndex = colIndex + 1
+    End If
+    
+    ' Add recovery column if recovery control is present
+    If recoveryControlTarget <> "" Then
+        resultsWs.Cells(currentRow, colIndex).Value = recoveryControlTarget & " Recovery (%)"
+        colIndex = colIndex + 1
+    End If
+    
+    resultsWs.Cells(currentRow, colIndex).Value = "QC Status"
+    resultsWs.Cells(currentRow, colIndex + 1).Value = "Calculation Details"
+    
+    ' Make headers bold
+    For i = 1 To colIndex + 1
+        resultsWs.Cells(currentRow, i).Font.Bold = True
+    Next i
+    currentRow = currentRow + 1
+    
+    ' Process each unique sample
+    Dim j As Integer
+    For j = 1 To uniqueSamples.Count
+        baseSampleName = uniqueSamples(j)
+        
+        ' Find the best dilution for this sample
+        Dim bestSampleName As String
+        Dim bestDilution As Double
+        Dim bestQuantity As Double
+        Dim bestCq As Double
+        
+        Call FindBestSampleData(ws, dataStartRow, lastRow, colSampleName, colTargetName, colQuantityMean, colCqMean, _
+                               baseSampleName, primaryTarget, bestSampleName, bestDilution, bestQuantity, bestCq)
+        
+        ' Calculate concentrations and QC
+        If bestSampleName <> "" Then
+            Dim finalConcentration As Double
+            finalConcentration = bestQuantity * totalConcentrationFactor * bestDilution
+            
+            ' Calculate RT-PCR inhibition if EC-RNA is available
+            Dim inhibitionPercent As String
+            Dim inhibitionValid As Boolean
+            inhibitionValid = True ' Default to true if no inhibition test
+            
+            If hasECRNA Then
+                inhibitionPercent = CalculateInhibition(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, _
+                                                       baseSampleName, detectedTargets, inhibitionValid, INHIBITION_THRESHOLD)
+            Else
+                inhibitionPercent = "Not Available"
+            End If
+            
+            ' Calculate recovery if recovery control is available
+            Dim recoveryPercent As String
+            Dim recoveryValid As Boolean
+            recoveryValid = True ' Default to true if no recovery test
+            
+            If recoveryControlTarget <> "" Then
+                recoveryPercent = CalculateRecovery(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, _
+                                                   baseSampleName, recoveryControlTarget, detectedTargets, _
+                                                   concentratedVolume, processControlVolume, recoveryValid, RECOVERY_THRESHOLD)
+            Else
+                recoveryPercent = "Not Available"
+            End If
+            
+            ' Determine QC status
+            Dim qcStatus As String
+            qcStatus = DetermineQCStatus(detectedTargets, primaryTarget, recoveryControlTarget, ntcIssues, _
+                                       inhibitionValid, recoveryValid, hasECRNA)
+            
+            ' Calculate details
+            Dim calcDetails As String
+            calcDetails = Format(bestQuantity, "#,##0") & " x " & Format(totalConcentrationFactor, "0.0") & " x " & bestDilution & " = " & Format(finalConcentration, "#,##0")
+            
+            ' Write results
+            colIndex = 1
+            resultsWs.Cells(currentRow, colIndex).Value = baseSampleName: colIndex = colIndex + 1
+            resultsWs.Cells(currentRow, colIndex).Value = IIf(bestDilution = 1, "None", "1:" & bestDilution): colIndex = colIndex + 1
+            resultsWs.Cells(currentRow, colIndex).Value = IIf(bestCq > 0, Format(bestCq, "0.000"), "N/A"): colIndex = colIndex + 1
+            resultsWs.Cells(currentRow, colIndex).Value = Format(bestQuantity, "#,##0"): colIndex = colIndex + 1
+            resultsWs.Cells(currentRow, colIndex).Value = Format(finalConcentration, "#,##0"): colIndex = colIndex + 1
+            
+            If hasECRNA Then
+                resultsWs.Cells(currentRow, colIndex).Value = inhibitionPercent: colIndex = colIndex + 1
+            End If
+            
+            If recoveryControlTarget <> "" Then
+                resultsWs.Cells(currentRow, colIndex).Value = recoveryPercent: colIndex = colIndex + 1
+            End If
+            
+            resultsWs.Cells(currentRow, colIndex).Value = qcStatus: colIndex = colIndex + 1
+            resultsWs.Cells(currentRow, colIndex).Value = calcDetails
+            
+            currentRow = currentRow + 1
+        End If
+    Next j
+    
+    ' Add notes
+    Call AddQCNotes(resultsWs, currentRow, hasECRNA, recoveryControlTarget, INHIBITION_THRESHOLD, RECOVERY_THRESHOLD, SLOPE_MIN, SLOPE_MAX, R_SQUARED_MIN)
+    
+End Sub
+
+Function HasECRNATarget(detectedTargets() As TargetInfo) As Boolean
+    
+    Dim i As Integer
+    For i = 1 To UBound(detectedTargets)
+        If InStr(detectedTargets(i).Name, "EC") > 0 Then
+            HasECRNATarget = True
+            Exit Function
+        End If
+    Next i
+    HasECRNATarget = False
+    
+End Function
+
+Sub FindBestSampleData(ws As Worksheet, dataStartRow As Long, lastRow As Long, _
+                      colSampleName As Long, colTargetName As Long, colQuantityMean As Long, colCqMean As Long, _
+                      baseSampleName As String, targetName As String, _
+                      ByRef bestSampleName As String, ByRef bestDilution As Double, _
+                      ByRef bestQuantity As Double, ByRef bestCq As Double)
+    
+    Dim i As Long
+    Dim sampleName As String
+    Dim currentTarget As String
+    Dim dilutionFactor As Double
+    Dim quantityMean As Double
+    
+    bestDilution = 999999 ' Start with very high number
+    bestSampleName = ""
+    bestQuantity = 0
+    bestCq = 0
+    
+    For i = dataStartRow + 1 To lastRow
+        sampleName = ws.Cells(i, colSampleName).Value
+        currentTarget = UCase(ws.Cells(i, colTargetName).Value)
+        
+        If GetBaseSampleName(sampleName) = baseSampleName And currentTarget = targetName Then
+            dilutionFactor = GetDilutionFactor(sampleName)
+            quantityMean = 0
+            If Not IsEmpty(ws.Cells(i, colQuantityMean).Value) And ws.Cells(i, colQuantityMean).Value <> "" Then
+                quantityMean = CDbl(ws.Cells(i, colQuantityMean).Value)
+            End If
+            
+            ' Use this dilution if it's lower and has valid data
+            If dilutionFactor < bestDilution And quantityMean > 0 Then
+                bestDilution = dilutionFactor
+                bestSampleName = sampleName
+                bestQuantity = quantityMean
+                If Not IsEmpty(ws.Cells(i, colCqMean).Value) Then
+                    bestCq = CDbl(ws.Cells(i, colCqMean).Value)
+                End If
+            End If
+        End If
+    Next i
+    
+End Sub
+
+Function CalculateInhibition(ws As Worksheet, dataStartRow As Long, lastRow As Long, _
+                           colSampleName As Long, colTargetName As Long, colCqMean As Long, _
+                           baseSampleName As String, detectedTargets() As TargetInfo, _
+                           ByRef inhibitionValid As Boolean, INHIBITION_THRESHOLD) As String
+    
+    ' Find the primary analytical target slope for inhibition calculation
+    Dim primarySlope As Double
+    Dim i As Integer
+    
+    primarySlope = 0
+    For i = 1 To UBound(detectedTargets)
+        If Not detectedTargets(i).IsRecoveryControl And Not (InStr(detectedTargets(i).Name, "EC") > 0) And detectedTargets(i).HasStandardCurve Then
+            primarySlope = detectedTargets(i).slope
+            Exit For
+        End If
+    Next i
+    
+    If primarySlope = 0 Then
+        CalculateInhibition = "No Standard Curve"
+        inhibitionValid = False
+        Exit Function
+    End If
+    
+    Dim sampleEcCq As Double, controlEcCq As Double, deltaCq As Double, inhibition As Double
+    
+    sampleEcCq = GetSampleEcRnaCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, baseSampleName)
+    controlEcCq = GetControlEcRnaCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean)
+    
+    If sampleEcCq > 0 And controlEcCq > 0 Then
+        deltaCq = sampleEcCq - controlEcCq
+        inhibition = (1 - (10 ^ (deltaCq / primarySlope))) * 100
+        inhibitionValid = (inhibition < INHIBITION_THRESHOLD)
+        CalculateInhibition = Format(inhibition, "0.1") & "%"
+    Else
+        CalculateInhibition = "Not Calculated"
+        inhibitionValid = False
+    End If
+    
+End Function
+
+Function CalculateRecovery(ws As Worksheet, dataStartRow As Long, lastRow As Long, _
+                         colSampleName As Long, colTargetName As Long, colCqMean As Long, _
+                         baseSampleName As String, recoveryControlTarget As String, detectedTargets() As TargetInfo, _
+                         concentratedVolume As Double, processControlVolume As Double, _
+                         ByRef recoveryValid As Boolean, RECOVERY_THRESHOLD) As String
+    
+    ' Find the recovery control target slope
+    Dim recoverySlope As Double
+    Dim i As Integer
+    
+    recoverySlope = 0
+    For i = 1 To UBound(detectedTargets)
+        If detectedTargets(i).Name = recoveryControlTarget And detectedTargets(i).HasStandardCurve Then
+            recoverySlope = detectedTargets(i).slope
+            Exit For
+        End If
+    Next i
+    
+    If recoverySlope = 0 Then
+        CalculateRecovery = "No Standard Curve"
+        recoveryValid = False
+        Exit Function
+    End If
+    
+    Dim sampleRecoveryCq As Double, processControlRecoveryCq As Double, deltaCq As Double
+    Dim samplePathDilution As Double, expectedDilutionDifference As Double
+    Dim rawRecovery As Double, recovery As Double
+    
+    sampleRecoveryCq = GetSampleRecoveryControlCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, baseSampleName, recoveryControlTarget)
+    processControlRecoveryCq = GetProcessControlRecoveryControlCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, recoveryControlTarget)
+    
+    If sampleRecoveryCq > 0 And processControlRecoveryCq > 0 Then
+        deltaCq = sampleRecoveryCq - processControlRecoveryCq
+        samplePathDilution = concentratedVolume / processControlVolume
+        expectedDilutionDifference = samplePathDilution / 1 ' Control is direct extraction
+        
+        rawRecovery = (10 ^ (deltaCq / recoverySlope)) * 100
+        recovery = rawRecovery * expectedDilutionDifference
+        recoveryValid = (recovery > RECOVERY_THRESHOLD)
+        CalculateRecovery = Format(recovery, "0.1") & "%"
+    Else
+        CalculateRecovery = "Not Calculated"
+        recoveryValid = False
+    End If
+    
+End Function
+
+Function DetermineQCStatus(detectedTargets() As TargetInfo, primaryTarget As String, recoveryControlTarget As String, _
+                         ntcIssues As String, inhibitionValid As Boolean, recoveryValid As Boolean, hasECRNA As Boolean) As String
+    
+    ' Find primary target curve validity
+    Dim primaryCurveValid As Boolean
+    Dim recoveryCurveValid As Boolean
+    Dim i As Integer
+    
+    primaryCurveValid = False
+    recoveryCurveValid = True ' Default to true if no recovery control
+    
+    For i = 1 To UBound(detectedTargets)
+        If detectedTargets(i).Name = primaryTarget And detectedTargets(i).HasStandardCurve Then
+            primaryCurveValid = detectedTargets(i).curveValid
+        End If
+        If detectedTargets(i).Name = recoveryControlTarget And detectedTargets(i).HasStandardCurve Then
+            recoveryCurveValid = detectedTargets(i).curveValid
+        End If
+    Next i
+    
+    ' Determine overall status
+    If primaryCurveValid And recoveryCurveValid And ntcIssues = "" Then
+        If hasECRNA And recoveryControlTarget <> "" Then
+            ' Full QC available
+            If inhibitionValid And recoveryValid Then
+                DetermineQCStatus = "Valid"
+            Else
+                DetermineQCStatus = "QC Fail"
+            End If
+        ElseIf hasECRNA Then
+            ' Only inhibition QC
+            If inhibitionValid Then
+                DetermineQCStatus = "Valid (No Recovery QC)"
+            Else
+                DetermineQCStatus = "Inhibition Fail"
+            End If
+        ElseIf recoveryControlTarget <> "" Then
+            ' Only recovery QC
+            If recoveryValid Then
+                DetermineQCStatus = "Valid (No Inhibition QC)"
+            Else
+                DetermineQCStatus = "Recovery Fail"
+            End If
+        Else
+            ' No QC available
+            DetermineQCStatus = "Valid (No QC Available)"
+        End If
+    Else
+        DetermineQCStatus = "Invalid"
+    End If
+    
+End Function
+
+Function GetSampleRecoveryControlCq(ws As Worksheet, dataStartRow As Long, lastRow As Long, _
+                                  colSampleName As Long, colTargetName As Long, colCqMean As Long, _
+                                  baseSampleName As String, recoveryControlTarget As String) As Double
+    
+    Dim i As Long
+    Dim sampleName As String
+    Dim targetName As String
+    Dim cqValue As Double
+    
+    For i = dataStartRow + 1 To lastRow
+        sampleName = ws.Cells(i, colSampleName).Value
+        targetName = UCase(ws.Cells(i, colTargetName).Value)
+        
+        If GetBaseSampleName(sampleName) = baseSampleName And targetName = recoveryControlTarget Then
+            If Not IsEmpty(ws.Cells(i, colCqMean).Value) And ws.Cells(i, colCqMean).Value <> "" Then
+                cqValue = CDbl(ws.Cells(i, colCqMean).Value)
+                GetSampleRecoveryControlCq = cqValue
+                Exit Function
+            End If
+        End If
+    Next i
+    
+    GetSampleRecoveryControlCq = 0 ' Not found
+    
+End Function
+
+Function GetProcessControlRecoveryControlCq(ws As Worksheet, dataStartRow As Long, lastRow As Long, _
+                                          colSampleName As Long, colTargetName As Long, colCqMean As Long, _
+                                          recoveryControlTarget As String) As Double
+    
+    Dim i As Long
+    Dim sampleName As String
+    Dim targetName As String
+    Dim cqValue As Double
+    
+    For i = dataStartRow + 1 To lastRow
+        sampleName = UCase(ws.Cells(i, colSampleName).Value)
+        targetName = UCase(ws.Cells(i, colTargetName).Value)
+        
+        If InStr(sampleName, "PROCESS") > 0 And targetName = recoveryControlTarget Then
+            If Not IsEmpty(ws.Cells(i, colCqMean).Value) And ws.Cells(i, colCqMean).Value <> "" Then
+                cqValue = CDbl(ws.Cells(i, colCqMean).Value)
+                GetProcessControlRecoveryControlCq = cqValue
+                Exit Function
+            End If
+        End If
+    Next i
+    
+    GetProcessControlRecoveryControlCq = 0 ' Not found
+    
+End Function
+
+Sub AddQCNotes(resultsWs As Worksheet, ByRef currentRow As Long, hasECRNA As Boolean, recoveryControlTarget As String, _
+               INHIBITION_THRESHOLD, RECOVERY_THRESHOLD, SLOPE_MIN, SLOPE_MAX, R_SQUARED_MIN)
+    
+    currentRow = currentRow + 1
+    resultsWs.Cells(currentRow, 1).Value = "QC Criteria:"
+    resultsWs.Cells(currentRow, 1).Font.Bold = True
+    currentRow = currentRow + 1
+    
+    If hasECRNA Then
+        resultsWs.Cells(currentRow, 1).Value = "- RT-qPCR Inhibition: <" & INHIBITION_THRESHOLD & "% acceptable"
+        currentRow = currentRow + 1
+    End If
+    
+    If recoveryControlTarget <> "" Then
+        resultsWs.Cells(currentRow, 1).Value = "- " & recoveryControlTarget & " Recovery: >" & RECOVERY_THRESHOLD & "% acceptable"
+        currentRow = currentRow + 1
+    End If
+    
+    resultsWs.Cells(currentRow, 1).Value = "- Standard Curves: Slope " & SLOPE_MIN & " to " & SLOPE_MAX & ", R-squared >=" & R_SQUARED_MIN
+    currentRow = currentRow + 1
+    resultsWs.Cells(currentRow, 1).Value = "- NTC: No amplification detected"
+    currentRow = currentRow + 1
+    
+    If Not hasECRNA Or recoveryControlTarget = "" Then
+        resultsWs.Cells(currentRow, 1).Value = "* Limited QC available - some quality control measures not included in this assay"
+        resultsWs.Cells(currentRow, 1).Font.Italic = True
+        currentRow = currentRow + 1
+    End If
+    
+End Sub
+
+' [Keep all your existing helper functions unchanged]
 
 Function CreateAnalysisWorkbook(sourceWs As Worksheet, analystInitials As String) As Workbook
     ' Create new workbook with proper structure
@@ -178,17 +933,32 @@ Sub CopyRawData(sourceWs As Worksheet, targetWs As Worksheet)
     ' Copy all raw data from source worksheet to target worksheet
     Dim lastRow As Long
     Dim lastCol As Long
+    Dim i As Long, j As Long
     
-    ' Find the extent of data
-    lastRow = sourceWs.Cells(sourceWs.Rows.Count, 1).End(xlUp).Row
-    lastCol = sourceWs.Cells(1, sourceWs.Columns.Count).End(xlToLeft).Column
+    ' Find the extent of data more robustly
+    lastRow = 0
+    lastCol = 0
     
-    ' Copy data
-    sourceWs.Range(sourceWs.Cells(1, 1), sourceWs.Cells(lastRow, lastCol)).Copy
-    targetWs.Range("A1").PasteSpecial xlPasteAll
+    ' Find last row with data in any column
+    For i = 1 To 1000 ' Check first 1000 rows
+        For j = 1 To 50 ' Check first 50 columns
+            If sourceWs.Cells(i, j).Value <> "" Then
+                If i > lastRow Then lastRow = i
+                If j > lastCol Then lastCol = j
+            End If
+        Next j
+    Next i
     
-    ' Clear clipboard
-    Application.CutCopyMode = False
+    ' Ensure we have at least some data
+    If lastRow = 0 Then lastRow = sourceWs.Cells(sourceWs.Rows.Count, 1).End(xlUp).Row
+    If lastCol = 0 Then lastCol = sourceWs.Cells(1, sourceWs.Columns.Count).End(xlToLeft).Column
+    
+    ' Copy data using values to avoid formatting issues
+    For i = 1 To lastRow
+        For j = 1 To lastCol
+            targetWs.Cells(i, j).Value = sourceWs.Cells(i, j).Value
+        Next j
+    Next i
     
     ' Add header information
     targetWs.Cells(1, lastCol + 2).Value = "Original File:"
@@ -199,44 +969,6 @@ Sub CopyRawData(sourceWs As Worksheet, targetWs As Worksheet)
     ' Auto-fit columns
     targetWs.Columns.AutoFit
 End Sub
-
-Function DetermineTargets(ws As Worksheet, dataStartRow As Long, lastRow As Long, colTargetName As Long) As String
-    ' Determine which targets are present in the data
-    Dim i As Long
-    Dim targetName As String
-    Dim targets As String
-    Dim hasN1 As Boolean
-    Dim hasMengo As Boolean
-    Dim hasECRNA As Boolean
-    
-    hasN1 = False
-    hasMengo = False
-    hasECRNA = False
-    
-    For i = dataStartRow + 1 To lastRow
-        targetName = UCase(Trim(ws.Cells(i, colTargetName).Value))
-        
-        If targetName = "N1" Then hasN1 = True
-        If targetName = "MENGO" Then hasMengo = True
-        If InStr(targetName, "EC") > 0 Then hasECRNA = True
-    Next i
-    
-    ' Build target string
-    targets = ""
-    If hasN1 Then targets = "N1"
-    If hasMengo Then
-        If targets <> "" Then targets = targets & "_"
-        targets = targets & "Mengo"
-    End If
-    If hasECRNA Then
-        If targets <> "" Then targets = targets & "_"
-        targets = targets & "EC"
-    End If
-    
-    If targets = "" Then targets = "Unknown"
-    
-    DetermineTargets = targets
-End Function
 
 Function GetAnalystInitials(analystName As String) As String
     ' Extract initials from analyst name
@@ -271,18 +1003,6 @@ Function GetAnalystInitials(analystName As String) As String
     
     GetAnalystInitials = initials
 End Function
-
-Function GenerateFileName(analystInitials As String, targets As String) As String
-    ' Generate filename following convention: yyyymmdd-analyst_initials-targets.xlsx
-    Dim dateStr As String
-    Dim fileName As String
-    
-    dateStr = Format(Date, "yyyymmdd")
-    fileName = dateStr & "-" & analystInitials & "-" & targets & ".xlsx"
-    
-    GenerateFileName = fileName
-End Function
-
 
 Sub SaveAsTemporary(wb As Workbook, suggestedName As String)
     ' Save workbook as temporary file with suggested name
@@ -333,8 +1053,8 @@ Function ShowParameterForm(ByRef initialSampleVol As Double, ByRef concentratedV
               "Initial Sample Volume: 40 ml" & vbCrLf & _
               "Concentrated Volume: 15 ml" & vbCrLf & _
               "Process Control Volume: 0.1 ml" & vbCrLf & _
-              "RNA Elution Volume: 100 �l" & vbCrLf & _
-              "qPCR Template Volume: 4 �l", vbYesNo + vbQuestion, "Processing Parameters") = vbYes Then
+              "RNA Elution Volume: 100 ul" & vbCrLf & _
+              "qPCR Template Volume: 4 ul", vbYesNo + vbQuestion, "Processing Parameters") = vbYes Then
         
         ' Use defaults
         initialSampleVol = 40
@@ -360,12 +1080,12 @@ Function ShowParameterForm(ByRef initialSampleVol As Double, ByRef concentratedV
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         processControlVol = CDbl(response)
         
-        response = InputBox("Enter RNA Elution Volume (�l):", "Processing Parameters", "100")
+        response = InputBox("Enter RNA Elution Volume (ul):", "Processing Parameters", "100")
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         extractionElutionVol = CDbl(response)
         
-        response = InputBox("Enter qPCR Template Volume (�l):", "Processing Parameters", "4")
+        response = InputBox("Enter qPCR Template Volume (ul):", "Processing Parameters", "4")
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         qpcrTemplateVol = CDbl(response)
@@ -439,7 +1159,7 @@ Sub ExtractMetadata(ws As Worksheet, resultsWs As Worksheet, analystName As Stri
     currentRow = 1
     
     ' Add title
-    resultsWs.Cells(currentRow, 1).Value = "N1 qPCR Analysis Results"
+    resultsWs.Cells(currentRow, 1).Value = "qPCR Analysis Results"
     resultsWs.Cells(currentRow, 1).Font.Bold = True
     resultsWs.Cells(currentRow, 1).Font.Size = 14
     currentRow = currentRow + 2
@@ -567,310 +1287,6 @@ Function GetBaseSampleName(sampleName As String) As String
     
 End Function
 
-Sub ProcessSamplesWithQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow As Long, lastRow As Long, _
-                        colSampleName As Long, colTargetName As Long, colTask As Long, colCqMean As Long, _
-                        colQuantityMean As Long, colQuantityStd As Long, _
-                        n1Slope As Double, n1RSquared As Double, n1Intercept As Double, n1CurveValid As Boolean, _
-                        mengoSlope As Double, mengoRSquared As Double, mengoIntercept As Double, mengoCurveValid As Boolean, _
-                        initialSampleVolume As Double, concentratedVolume As Double, processControlVolume As Double, _
-                        extractionElutionVolume As Double, qpcrTemplateVolume As Double, _
-                        INHIBITION_THRESHOLD, RECOVERY_THRESHOLD, ntcIssues As String)
-    
-    Dim i As Long
-    Dim currentRow As Long
-    Dim sampleName As String
-    Dim baseSampleName As String
-    Dim targetName As String
-    Dim task As String
-    Dim quantityMean As Double
-    Dim quantityStd As Double
-    Dim cqMean As Double
-    Dim dilutionFactor As Double
-    
-    ' Conversion factors
-    Dim rnaConcentrationFactor As Double
-    Dim sampleConcentrationFactor As Double
-    Dim totalConcentrationFactor As Double
-    
-    rnaConcentrationFactor = extractionElutionVolume / qpcrTemplateVolume
-    sampleConcentrationFactor = 1000 / concentratedVolume
-    totalConcentrationFactor = rnaConcentrationFactor * sampleConcentrationFactor
-    
-    ' Collections to group samples
-    Dim uniqueSamples As Collection
-    Dim sampleData As Collection
-    Set uniqueSamples = New Collection
-    Set sampleData = New Collection
-    
-    ' First pass: collect unique samples and their data
-    For i = dataStartRow + 1 To lastRow
-        sampleName = ws.Cells(i, colSampleName).Value
-        targetName = UCase(ws.Cells(i, colTargetName).Value)
-        task = UCase(ws.Cells(i, colTask).Value)
-        
-        ' Skip empty rows, standards, and controls
-        If sampleName <> "" And Not IsControl(sampleName, task) And targetName = "N1" Then
-            baseSampleName = GetBaseSampleName(sampleName)
-            dilutionFactor = GetDilutionFactor(sampleName)
-            
-            ' Try to add to unique samples collection
-            On Error Resume Next
-            uniqueSamples.Add baseSampleName, baseSampleName
-            On Error GoTo 0
-            
-            ' Store sample data
-            Dim sampleInfo As String
-            sampleInfo = baseSampleName & "|" & CStr(dilutionFactor) & "|" & sampleName
-            sampleData.Add sampleInfo
-        End If
-    Next i
-    
-    ' Add standard curve QC section
-    currentRow = resultsWs.Cells(resultsWs.Rows.Count, 1).End(xlUp).Row + 2
-    resultsWs.Cells(currentRow, 1).Value = "Standard Curve Quality Control:"
-    resultsWs.Cells(currentRow, 1).Font.Bold = True
-    currentRow = currentRow + 1
-    
-    ' N1 Standard Curve
-    resultsWs.Cells(currentRow, 1).Value = "N1 Standard Curve:"
-    resultsWs.Cells(currentRow, 1).Font.Bold = True
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Slope:"
-    resultsWs.Cells(currentRow, 2).Value = Format(n1Slope, "0.000")
-    resultsWs.Cells(currentRow, 3).Value = "Required: " & SLOPE_MIN & " to " & SLOPE_MAX
-    resultsWs.Cells(currentRow, 4).Value = IIf(n1Slope >= SLOPE_MIN And n1Slope <= SLOPE_MAX, "PASS", "FAIL")
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "R�:"
-    resultsWs.Cells(currentRow, 2).Value = Format(n1RSquared, "0.000")
-    resultsWs.Cells(currentRow, 3).Value = "Required: =" & R_SQUARED_MIN
-    resultsWs.Cells(currentRow, 4).Value = IIf(n1RSquared >= R_SQUARED_MIN, "PASS", "FAIL")
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Overall Status:"
-    resultsWs.Cells(currentRow, 2).Value = IIf(n1CurveValid, "VALID", "INVALID")
-    currentRow = currentRow + 2
-    
-    ' Mengo Standard Curve
-    resultsWs.Cells(currentRow, 1).Value = "Mengo Standard Curve:"
-    resultsWs.Cells(currentRow, 1).Font.Bold = True
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Slope:"
-    resultsWs.Cells(currentRow, 2).Value = Format(mengoSlope, "0.000")
-    resultsWs.Cells(currentRow, 3).Value = "Required: " & SLOPE_MIN & " to " & SLOPE_MAX
-    resultsWs.Cells(currentRow, 4).Value = IIf(mengoSlope >= SLOPE_MIN And mengoSlope <= SLOPE_MAX, "PASS", "FAIL")
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "R�:"
-    resultsWs.Cells(currentRow, 2).Value = Format(mengoRSquared, "0.000")
-    resultsWs.Cells(currentRow, 3).Value = "Required: =" & R_SQUARED_MIN
-    resultsWs.Cells(currentRow, 4).Value = IIf(mengoRSquared >= R_SQUARED_MIN, "PASS", "FAIL")
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Overall Status:"
-    resultsWs.Cells(currentRow, 2).Value = IIf(mengoCurveValid, "VALID", "INVALID")
-    currentRow = currentRow + 2
-    
-    ' NTC Status
-    If ntcIssues <> "" Then
-        resultsWs.Cells(currentRow, 1).Value = "NTC Issues:"
-        resultsWs.Cells(currentRow, 1).Font.Bold = True
-        resultsWs.Cells(currentRow, 1).Font.Color = RGB(255, 0, 0)
-        currentRow = currentRow + 1
-        resultsWs.Cells(currentRow, 1).Value = ntcIssues
-        currentRow = currentRow + 1
-    Else
-        resultsWs.Cells(currentRow, 1).Value = "NTC Status: PASS (No amplification detected)"
-        resultsWs.Cells(currentRow, 1).Font.Color = RGB(0, 128, 0)
-        currentRow = currentRow + 1
-    End If
-    currentRow = currentRow + 1
-    
-    ' Processing parameters
-    resultsWs.Cells(currentRow, 1).Value = "Processing Parameters:"
-    resultsWs.Cells(currentRow, 1).Font.Bold = True
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Initial Sample Volume (ml):"
-    resultsWs.Cells(currentRow, 2).Value = initialSampleVolume
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Concentrated Volume (ml):"
-    resultsWs.Cells(currentRow, 2).Value = concentratedVolume
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "RNA Elution Volume (�l):"
-    resultsWs.Cells(currentRow, 2).Value = extractionElutionVolume
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "qPCR Template Volume (�l):"
-    resultsWs.Cells(currentRow, 2).Value = qpcrTemplateVolume
-    currentRow = currentRow + 1
-    
-    resultsWs.Cells(currentRow, 1).Value = "Base Concentration Factor:"
-    resultsWs.Cells(currentRow, 2).Value = Format(totalConcentrationFactor, "0.0")
-    currentRow = currentRow + 3
-    
-    ' Create results table header
-    resultsWs.Cells(currentRow, 1).Value = "Sample Results:"
-    resultsWs.Cells(currentRow, 1).Font.Bold = True
-    currentRow = currentRow + 1
-    
-    ' Table headers
-    resultsWs.Cells(currentRow, 1).Value = "Sample Name"
-    resultsWs.Cells(currentRow, 2).Value = "Dilution Factor"
-    resultsWs.Cells(currentRow, 3).Value = "Cq Mean"
-    resultsWs.Cells(currentRow, 4).Value = "Quantity Mean"
-    resultsWs.Cells(currentRow, 5).Value = "Final Conc. (copies/L)"
-    resultsWs.Cells(currentRow, 6).Value = "RT-PCR Inhibition (%)"
-    resultsWs.Cells(currentRow, 7).Value = "Mengo Recovery (%)"
-    resultsWs.Cells(currentRow, 8).Value = "QC Status"
-    resultsWs.Cells(currentRow, 9).Value = "Calculation Details"
-    
-    ' Make headers bold
-    For i = 1 To 9
-        resultsWs.Cells(currentRow, i).Font.Bold = True
-    Next i
-    currentRow = currentRow + 1
-    
-    ' Process each unique sample
-    Dim j As Integer
-    For j = 1 To uniqueSamples.Count
-        baseSampleName = uniqueSamples(j)
-        
-        ' Find the best dilution for this sample (lowest dilution with valid data)
-        Dim bestSampleName As String
-        Dim bestDilution As Double
-        Dim bestQuantity As Double
-        Dim bestCq As Double
-        
-        bestDilution = 999999 ' Start with very high number
-        
-        ' Look through all variants of this sample
-        For i = dataStartRow + 1 To lastRow
-            sampleName = ws.Cells(i, colSampleName).Value
-            targetName = UCase(ws.Cells(i, colTargetName).Value)
-            
-            If GetBaseSampleName(sampleName) = baseSampleName And targetName = "N1" Then
-                dilutionFactor = GetDilutionFactor(sampleName)
-                quantityMean = 0
-                If Not IsEmpty(ws.Cells(i, colQuantityMean).Value) And ws.Cells(i, colQuantityMean).Value <> "" Then
-                    quantityMean = CDbl(ws.Cells(i, colQuantityMean).Value)
-                End If
-                
-                ' Use this dilution if it's lower and has valid data
-                If dilutionFactor < bestDilution And quantityMean > 0 Then
-                    bestDilution = dilutionFactor
-                    bestSampleName = sampleName
-                    bestQuantity = quantityMean
-                    If Not IsEmpty(ws.Cells(i, colCqMean).Value) Then
-                        bestCq = CDbl(ws.Cells(i, colCqMean).Value)
-                    End If
-                End If
-            End If
-        Next i
-        
-        ' Calculate concentrations and QC
-        If bestSampleName <> "" Then
-            Dim finalConcentration As Double
-            finalConcentration = bestQuantity * totalConcentrationFactor * bestDilution
-            
-            ' Calculate RT-PCR inhibition and Mengo recovery
-            Dim inhibition As Double, recovery As Double
-            Dim inhibitionPercent As String, recoveryPercent As String
-            Dim inhibitionValid As Boolean, recoveryValid As Boolean
-            Dim qcStatus As String
-            
-            ' RT-PCR Inhibition calculation
-            Dim sampleEcCq As Double, controlEcCq As Double, deltaCq As Double
-            sampleEcCq = GetSampleEcRnaCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, baseSampleName)
-            controlEcCq = GetControlEcRnaCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean)
-            
-            If sampleEcCq > 0 And controlEcCq > 0 Then
-                deltaCq = sampleEcCq - controlEcCq
-                inhibition = (1 - (10 ^ (deltaCq / n1Slope))) * 100
-                inhibitionPercent = Format(inhibition, "0.1") & "%"
-                inhibitionValid = (inhibition < INHIBITION_THRESHOLD)
-            Else
-                inhibitionPercent = "Not Calculated"
-                inhibitionValid = False
-            End If
-            
-            ' Mengo Recovery calculation
-            Dim sampleMengoCq As Double, processControlMengoCq As Double
-            sampleMengoCq = GetSampleMengoCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean, baseSampleName)
-            processControlMengoCq = GetProcessControlMengoCq(ws, dataStartRow, lastRow, colSampleName, colTargetName, colCqMean)
-            
-            If sampleMengoCq > 0 And processControlMengoCq > 0 Then
-                deltaCq = sampleMengoCq - processControlMengoCq
-                Dim samplePathDilution As Double, expectedDilutionDifference As Double
-                samplePathDilution = concentratedVolume / processControlVolume
-                expectedDilutionDifference = samplePathDilution / 1 ' Control is direct extraction
-                
-                Dim rawRecovery As Double
-                rawRecovery = (10 ^ (deltaCq / mengoSlope)) * 100
-                recovery = rawRecovery * expectedDilutionDifference
-                recoveryPercent = Format(recovery, "0.1") & "%"
-                recoveryValid = (recovery > RECOVERY_THRESHOLD)
-            Else
-                recoveryPercent = "Not Calculated"
-                recoveryValid = False
-            End If
-            
-            ' Determine QC status
-            If n1CurveValid And mengoCurveValid And ntcIssues = "" Then
-                If inhibitionPercent <> "Not Calculated" And recoveryPercent <> "Not Calculated" Then
-                    If inhibitionValid And recoveryValid Then
-                        qcStatus = "Valid"
-                    Else
-                        qcStatus = "QC Fail"
-                    End If
-                Else
-                    qcStatus = "Incomplete QC"
-                End If
-            Else
-                qcStatus = "Invalid"
-            End If
-            
-            ' Calculate details
-            Dim calcDetails As String
-            calcDetails = Format(bestQuantity, "#,##0") & " � " & Format(totalConcentrationFactor, "0.0") & " � " & bestDilution & " = " & Format(finalConcentration, "#,##0")
-            
-            ' Write results
-            resultsWs.Cells(currentRow, 1).Value = baseSampleName
-            resultsWs.Cells(currentRow, 2).Value = IIf(bestDilution = 1, "None", "1:" & bestDilution)
-            resultsWs.Cells(currentRow, 3).Value = IIf(bestCq > 0, Format(bestCq, "0.000"), "N/A")
-            resultsWs.Cells(currentRow, 4).Value = Format(bestQuantity, "#,##0")
-            resultsWs.Cells(currentRow, 5).Value = Format(finalConcentration, "#,##0")
-            resultsWs.Cells(currentRow, 6).Value = inhibitionPercent
-            resultsWs.Cells(currentRow, 7).Value = recoveryPercent
-            resultsWs.Cells(currentRow, 8).Value = qcStatus
-            resultsWs.Cells(currentRow, 9).Value = calcDetails
-            
-            currentRow = currentRow + 1
-        End If
-    Next j
-    
-    ' Add notes
-    currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "QC Criteria:"
-    resultsWs.Cells(currentRow, 1).Font.Bold = True
-    currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "� RT-qPCR Inhibition: <" & INHIBITION_THRESHOLD & "% acceptable"
-    currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "� Mengo Recovery: >" & RECOVERY_THRESHOLD & "% acceptable"
-    currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "� Standard Curves: Slope " & SLOPE_MIN & " to " & SLOPE_MAX & ", R� =" & R_SQUARED_MIN
-    currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "� NTC: No amplification detected"
-    currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "* Valid with QC warnings indicates passing standard curves and NTC but failing inhibition/recovery"
-    resultsWs.Cells(currentRow, 1).Font.Italic = True
-    
-End Sub
-
 Function IsControl(sampleName As String, task As String) As Boolean
     
     Dim sampleUpper As String
@@ -907,7 +1323,7 @@ Function GetSampleEcRnaCq(ws As Worksheet, dataStartRow As Long, lastRow As Long
         sampleName = ws.Cells(i, colSampleName).Value
         targetName = UCase(ws.Cells(i, colTargetName).Value)
         
-        If GetBaseSampleName(sampleName) = baseSampleName And targetName = "EC-N1" Then
+        If GetBaseSampleName(sampleName) = baseSampleName And InStr(targetName, "EC") > 0 Then
             If Not IsEmpty(ws.Cells(i, colCqMean).Value) And ws.Cells(i, colCqMean).Value <> "" Then
                 cqValue = CDbl(ws.Cells(i, colCqMean).Value)
                 GetSampleEcRnaCq = cqValue
@@ -933,7 +1349,7 @@ Function GetControlEcRnaCq(ws As Worksheet, dataStartRow As Long, lastRow As Lon
         sampleName = UCase(ws.Cells(i, colSampleName).Value)
         targetName = UCase(ws.Cells(i, colTargetName).Value)
         
-        If (InStr(sampleName, "WATER") > 0 Or InStr(sampleName, "CONTROL") > 0) And targetName = "EC-N1" Then
+        If (InStr(sampleName, "WATER") > 0 Or InStr(sampleName, "CONTROL") > 0) And InStr(targetName, "EC") > 0 Then
             If Not IsEmpty(ws.Cells(i, colCqMean).Value) And ws.Cells(i, colCqMean).Value <> "" Then
                 cqValue = CDbl(ws.Cells(i, colCqMean).Value)
                 GetControlEcRnaCq = cqValue
@@ -1011,51 +1427,70 @@ Sub FormatResultsWorksheet(resultsWs As Worksheet)
     
     ' Find "Sample Results:" header
     For i = 1 To 100
-        If InStr(resultsWs.Cells(i, 1).Value, "Sample Results:") > 0 Then
+        If InStr(resultsWs.Cells(i, 1).Value, "Sample Results") > 0 Then
             tableStartRow = i + 1 ' Header row
             Exit For
         End If
     Next i
     
     If tableStartRow > 0 Then
-        ' Find end of table
-        tableEndRow = resultsWs.Cells(resultsWs.Rows.Count, 1).End(xlUp).Row
+        ' Find end of table (look for QC Criteria section or end of data)
+        For i = tableStartRow To resultsWs.Cells(resultsWs.Rows.Count, 1).End(xlUp).Row
+            If InStr(resultsWs.Cells(i, 1).Value, "QC Criteria") > 0 Then
+                tableEndRow = i - 2 ' Stop before QC Criteria
+                Exit For
+            End If
+        Next i
+        
+        If tableEndRow = 0 Then
+            tableEndRow = resultsWs.Cells(resultsWs.Rows.Count, 1).End(xlUp).Row
+        End If
         
         ' Apply table formatting
-        With resultsWs.Range(resultsWs.Cells(tableStartRow, 1), resultsWs.Cells(tableEndRow, 9))
+        With resultsWs.Range(resultsWs.Cells(tableStartRow, 1), resultsWs.Cells(tableEndRow, 10))
             .Borders.LineStyle = xlContinuous
             .Borders.Weight = xlThin
         End With
         
         ' Header row formatting
-        With resultsWs.Range(resultsWs.Cells(tableStartRow, 1), resultsWs.Cells(tableStartRow, 9))
+        With resultsWs.Range(resultsWs.Cells(tableStartRow, 1), resultsWs.Cells(tableStartRow, 10))
             .Interior.Color = RGB(200, 200, 200)
             .Font.Bold = True
         End With
         
-        ' Color code QC status column
-        For i = tableStartRow + 1 To tableEndRow
-            If resultsWs.Cells(i, 8).Value = "Valid" Or InStr(resultsWs.Cells(i, 8).Value, "Valid") > 0 Then
-                resultsWs.Cells(i, 8).Interior.Color = RGB(200, 255, 200) ' Light green
-            ElseIf resultsWs.Cells(i, 8).Value = "Invalid" Then
-                resultsWs.Cells(i, 8).Interior.Color = RGB(255, 200, 200) ' Light red
+        ' Color code QC status column (find the column with "QC Status")
+        Dim qcColumn As Long
+        qcColumn = 0
+        For i = 1 To 10
+            If InStr(resultsWs.Cells(tableStartRow, i).Value, "QC Status") > 0 Then
+                qcColumn = i
+                Exit For
             End If
         Next i
+        
+        If qcColumn > 0 Then
+            For i = tableStartRow + 1 To tableEndRow
+                If InStr(resultsWs.Cells(i, qcColumn).Value, "Valid") > 0 Then
+                    resultsWs.Cells(i, qcColumn).Interior.Color = RGB(200, 255, 200) ' Light green
+                ElseIf InStr(resultsWs.Cells(i, qcColumn).Value, "Fail") > 0 Or resultsWs.Cells(i, qcColumn).Value = "Invalid" Then
+                    resultsWs.Cells(i, qcColumn).Interior.Color = RGB(255, 200, 200) ' Light red
+                ElseIf InStr(resultsWs.Cells(i, qcColumn).Value, "No") > 0 Then
+                    resultsWs.Cells(i, qcColumn).Interior.Color = RGB(255, 255, 200) ' Light yellow
+                End If
+            Next i
+        End If
     End If
     
-    ' Set column widths
+    ' Set column widths for better readability
     resultsWs.Columns("A:A").ColumnWidth = 18 ' Sample Name
     resultsWs.Columns("B:B").ColumnWidth = 12 ' Dilution Factor
     resultsWs.Columns("C:C").ColumnWidth = 10 ' Cq Mean
     resultsWs.Columns("D:D").ColumnWidth = 12 ' Quantity Mean
     resultsWs.Columns("E:E").ColumnWidth = 15 ' Final Concentration
-    resultsWs.Columns("F:F").ColumnWidth = 15 ' Inhibition
-    resultsWs.Columns("G:G").ColumnWidth = 15 ' Recovery
-    resultsWs.Columns("H:H").ColumnWidth = 12 ' QC Status
-    resultsWs.Columns("I:I").ColumnWidth = 30 ' Calculation Details
+    resultsWs.Columns("F:F").ColumnWidth = 15 ' Inhibition/Recovery columns
+    resultsWs.Columns("G:G").ColumnWidth = 15
+    resultsWs.Columns("H:H").ColumnWidth = 15
+    resultsWs.Columns("I:I").ColumnWidth = 12 ' QC Status
+    resultsWs.Columns("J:J").ColumnWidth = 30 ' Calculation Details
     
 End Sub
-
-
-
-
