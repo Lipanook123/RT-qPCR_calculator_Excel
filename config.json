@@ -1,0 +1,11 @@
+{
+  "app_name": "XVBA",
+  "description": "",
+  "author": "David Walker",
+  "email": "",
+  "create_ate": "",
+  "excel_file": "RT-qPCR_calculator.xlam",
+  "vba_folder": "vba-files",
+  "xvba_packages": [],
+  "xvba_dev_packages": []
+}

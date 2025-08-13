@@ -1,9 +1,13 @@
+Attribute VB_Name = "Calculator"
 ' Public quality control thresholds - defined once, used everywhere
 Public Const SLOPE_MIN As Double = -3.6
 Public Const SLOPE_MAX As Double = -3.1
 Public Const R_SQUARED_MIN As Double = 0.98
 Public Const INHIBITION_THRESHOLD As Double = 75
 Public Const RECOVERY_THRESHOLD As Double = 1
+
+
+
 
 Sub ProcessN1_qPCRData()
     
@@ -136,8 +140,8 @@ Sub ProcessN1_qPCRData()
     ' Show completion message with instructions
     MsgBox "Analysis complete!" & vbCrLf & vbCrLf & _
            "A new workbook has been created with:" & vbCrLf & _
-           "• Raw_CSV sheet (original data)" & vbCrLf & _
-           "• Results sheet (analysis results)" & vbCrLf & vbCrLf & _
+           "� Raw_CSV sheet (original data)" & vbCrLf & _
+           "� Results sheet (analysis results)" & vbCrLf & vbCrLf & _
            "The file has been saved as a temporary file." & vbCrLf & _
            "Please use 'Save As' to save it to your desired location." & vbCrLf & vbCrLf & _
            "Suggested filename: " & fileName, vbInformation, "Analysis Complete"
@@ -329,8 +333,8 @@ Function ShowParameterForm(ByRef initialSampleVol As Double, ByRef concentratedV
               "Initial Sample Volume: 40 ml" & vbCrLf & _
               "Concentrated Volume: 15 ml" & vbCrLf & _
               "Process Control Volume: 0.1 ml" & vbCrLf & _
-              "RNA Elution Volume: 100 µl" & vbCrLf & _
-              "qPCR Template Volume: 4 µl", vbYesNo + vbQuestion, "Processing Parameters") = vbYes Then
+              "RNA Elution Volume: 100 �l" & vbCrLf & _
+              "qPCR Template Volume: 4 �l", vbYesNo + vbQuestion, "Processing Parameters") = vbYes Then
         
         ' Use defaults
         initialSampleVol = 40
@@ -356,12 +360,12 @@ Function ShowParameterForm(ByRef initialSampleVol As Double, ByRef concentratedV
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         processControlVol = CDbl(response)
         
-        response = InputBox("Enter RNA Elution Volume (µl):", "Processing Parameters", "100")
+        response = InputBox("Enter RNA Elution Volume (�l):", "Processing Parameters", "100")
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         extractionElutionVol = CDbl(response)
         
-        response = InputBox("Enter qPCR Template Volume (µl):", "Processing Parameters", "4")
+        response = InputBox("Enter qPCR Template Volume (�l):", "Processing Parameters", "4")
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         qpcrTemplateVol = CDbl(response)
@@ -638,7 +642,7 @@ Sub ProcessSamplesWithQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow A
     resultsWs.Cells(currentRow, 4).Value = IIf(n1Slope >= SLOPE_MIN And n1Slope <= SLOPE_MAX, "PASS", "FAIL")
     currentRow = currentRow + 1
     
-    resultsWs.Cells(currentRow, 1).Value = "R²:"
+    resultsWs.Cells(currentRow, 1).Value = "R�:"
     resultsWs.Cells(currentRow, 2).Value = Format(n1RSquared, "0.000")
     resultsWs.Cells(currentRow, 3).Value = "Required: =" & R_SQUARED_MIN
     resultsWs.Cells(currentRow, 4).Value = IIf(n1RSquared >= R_SQUARED_MIN, "PASS", "FAIL")
@@ -659,7 +663,7 @@ Sub ProcessSamplesWithQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow A
     resultsWs.Cells(currentRow, 4).Value = IIf(mengoSlope >= SLOPE_MIN And mengoSlope <= SLOPE_MAX, "PASS", "FAIL")
     currentRow = currentRow + 1
     
-    resultsWs.Cells(currentRow, 1).Value = "R²:"
+    resultsWs.Cells(currentRow, 1).Value = "R�:"
     resultsWs.Cells(currentRow, 2).Value = Format(mengoRSquared, "0.000")
     resultsWs.Cells(currentRow, 3).Value = "Required: =" & R_SQUARED_MIN
     resultsWs.Cells(currentRow, 4).Value = IIf(mengoRSquared >= R_SQUARED_MIN, "PASS", "FAIL")
@@ -697,11 +701,11 @@ Sub ProcessSamplesWithQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow A
     resultsWs.Cells(currentRow, 2).Value = concentratedVolume
     currentRow = currentRow + 1
     
-    resultsWs.Cells(currentRow, 1).Value = "RNA Elution Volume (µl):"
+    resultsWs.Cells(currentRow, 1).Value = "RNA Elution Volume (�l):"
     resultsWs.Cells(currentRow, 2).Value = extractionElutionVolume
     currentRow = currentRow + 1
     
-    resultsWs.Cells(currentRow, 1).Value = "qPCR Template Volume (µl):"
+    resultsWs.Cells(currentRow, 1).Value = "qPCR Template Volume (�l):"
     resultsWs.Cells(currentRow, 2).Value = qpcrTemplateVolume
     currentRow = currentRow + 1
     
@@ -832,7 +836,7 @@ Sub ProcessSamplesWithQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow A
             
             ' Calculate details
             Dim calcDetails As String
-            calcDetails = Format(bestQuantity, "#,##0") & " × " & Format(totalConcentrationFactor, "0.0") & " × " & bestDilution & " = " & Format(finalConcentration, "#,##0")
+            calcDetails = Format(bestQuantity, "#,##0") & " � " & Format(totalConcentrationFactor, "0.0") & " � " & bestDilution & " = " & Format(finalConcentration, "#,##0")
             
             ' Write results
             resultsWs.Cells(currentRow, 1).Value = baseSampleName
@@ -854,13 +858,13 @@ Sub ProcessSamplesWithQC(ws As Worksheet, resultsWs As Worksheet, dataStartRow A
     resultsWs.Cells(currentRow, 1).Value = "QC Criteria:"
     resultsWs.Cells(currentRow, 1).Font.Bold = True
     currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "• RT-qPCR Inhibition: <" & INHIBITION_THRESHOLD & "% acceptable"
+    resultsWs.Cells(currentRow, 1).Value = "� RT-qPCR Inhibition: <" & INHIBITION_THRESHOLD & "% acceptable"
     currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "• Mengo Recovery: >" & RECOVERY_THRESHOLD & "% acceptable"
+    resultsWs.Cells(currentRow, 1).Value = "� Mengo Recovery: >" & RECOVERY_THRESHOLD & "% acceptable"
     currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "• Standard Curves: Slope " & SLOPE_MIN & " to " & SLOPE_MAX & ", R² =" & R_SQUARED_MIN
+    resultsWs.Cells(currentRow, 1).Value = "� Standard Curves: Slope " & SLOPE_MIN & " to " & SLOPE_MAX & ", R� =" & R_SQUARED_MIN
     currentRow = currentRow + 1
-    resultsWs.Cells(currentRow, 1).Value = "• NTC: No amplification detected"
+    resultsWs.Cells(currentRow, 1).Value = "� NTC: No amplification detected"
     currentRow = currentRow + 1
     resultsWs.Cells(currentRow, 1).Value = "* Valid with QC warnings indicates passing standard curves and NTC but failing inhibition/recovery"
     resultsWs.Cells(currentRow, 1).Font.Italic = True
