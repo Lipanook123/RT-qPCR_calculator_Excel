@@ -1,4 +1,3 @@
-Attribute VB_Name = "Calculator"
 ' Public quality control thresholds - defined once, used everywhere
 Public Const SLOPE_MIN As Double = -3.6
 Public Const SLOPE_MAX As Double = -3.1
@@ -6,7 +5,16 @@ Public Const R_SQUARED_MIN As Double = 0.98
 Public Const INHIBITION_THRESHOLD As Double = 75
 Public Const RECOVERY_THRESHOLD As Double = 1
 
-Const BUTTON_CAPTION = "qPCR Calculator"
+Public Const INITIAL_SAMPLE_VOL = 40
+Public Const CONCENTRATED_VOL = 15
+Public Const PROCESS_CONTROL_VOL = 0.1
+Public Const ELUTION_VOL = 100
+Public Const TEMPLATE_VOL = 5
+
+
+
+
+Const BUTTON_CAPTION = "RT-qPCR Calculator"
 
 ' Dynamic target detection structure
 Type TargetInfo
@@ -18,6 +26,7 @@ Type TargetInfo
     intercept As Double
     curveValid As Boolean
 End Type
+
 
 
 '========================================
@@ -68,7 +77,25 @@ Sub Auto_Close()
 End Sub
 
 
-
+Function CleanUserName(rawName As String) As String
+    ' Remove organization name in parentheses from username
+    ' E.g. "David Walker (Cefas)" -> "David Walker"
+    
+    Dim cleanName As String
+    Dim openParenPos As Integer
+    
+    cleanName = Trim(rawName)
+    
+    ' Find the position of the opening parenthesis
+    openParenPos = InStr(cleanName, "(")
+    
+    If openParenPos > 0 Then
+        ' Remove everything from the opening parenthesis onwards
+        cleanName = Trim(Left(cleanName, openParenPos - 1))
+    End If
+    
+    CleanUserName = cleanName
+End Function
 
 
 
@@ -454,7 +481,7 @@ Sub ProcessSamplesWithDynamicQC(ws As Worksheet, resultsWs As Worksheet, dataSta
             
             resultsWs.Cells(currentRow, 1).Value = "R²:"
             resultsWs.Cells(currentRow, 2).Value = Format(detectedTargets(i).rSquared, "0.000")
-            resultsWs.Cells(currentRow, 3).Value = "Required: ≥" & R_SQUARED_MIN
+            resultsWs.Cells(currentRow, 3).Value = "Required: >=" & R_SQUARED_MIN
             resultsWs.Cells(currentRow, 4).Value = IIf(detectedTargets(i).rSquared >= R_SQUARED_MIN, "PASS", "FAIL")
             currentRow = currentRow + 1
             
@@ -888,7 +915,7 @@ Sub AddQCNotes(resultsWs As Worksheet, ByRef currentRow As Long, hasECRNA As Boo
         currentRow = currentRow + 1
     End If
     
-    resultsWs.Cells(currentRow, 1).Value = "- Standard Curves: Slope " & SLOPE_MIN & " to " & SLOPE_MAX & ", R-squared >=" & R_SQUARED_MIN
+    resultsWs.Cells(currentRow, 1).Value = "- Standard Curves: Slope " & SLOPE_MIN & " to " & SLOPE_MAX & ", R² >=" & R_SQUARED_MIN
     currentRow = currentRow + 1
     resultsWs.Cells(currentRow, 1).Value = "- NTC: No amplification detected"
     currentRow = currentRow + 1
@@ -1037,11 +1064,14 @@ Function ShowParameterForm(ByRef initialSampleVol As Double, ByRef concentratedV
     ' Create a simple input form using InputBox for parameters
     Dim response As String
     Dim proceed As Boolean
+    Dim rawUserName As String
+    
+    rawUserName = Application.UserName
     
     proceed = True
     
     ' Get analyst name first
-    analystName = InputBox("Enter analyst name (for file naming):", "Analyst Information", Environ("USERNAME"))
+    analystName = InputBox("Enter analyst name (for file naming):", "Analyst Information", CleanUserName(rawUserName))
     If analystName = "" Then
         proceed = False
         GoTo ExitFunction
@@ -1050,42 +1080,46 @@ Function ShowParameterForm(ByRef initialSampleVol As Double, ByRef concentratedV
     ' Show initial message about parameters
     If MsgBox("Do you want to use default processing parameters?" & vbCrLf & vbCrLf & _
               "Defaults:" & vbCrLf & _
-              "Initial Sample Volume: 40 ml" & vbCrLf & _
-              "Concentrated Volume: 15 ml" & vbCrLf & _
-              "Process Control Volume: 0.1 ml" & vbCrLf & _
-              "RNA Elution Volume: 100 ul" & vbCrLf & _
-              "qPCR Template Volume: 4 ul", vbYesNo + vbQuestion, "Processing Parameters") = vbYes Then
+              "Initial Sample Volume: " & INITIAL_SAMPLE_VOL & " ml" & vbCrLf & _
+              "Concentrated Volume: " & CONCENTRATED_VOL & " ml" & vbCrLf & _
+              "Process Control Volume: " & PROCESS_CONTROL_VOL & " ml" & vbCrLf & _
+              "RNA Elution Volume: " & ELUTION_VOL & " µl" & vbCrLf & _
+              "qPCR Template Volume: " & TEMPLATE_VOL & " µl", vbYesNo + vbQuestion, "Processing Parameters") = vbYes Then
         
         ' Use defaults
-        initialSampleVol = 40
-        concentratedVol = 15
-        processControlVol = 0.1
-        extractionElutionVol = 100
-        qpcrTemplateVol = 4
+        initialSampleVol = INITIAL_SAMPLE_VOL
+        concentratedVol = CONCENTRATED_VOL
+        processControlVol = PROCESS_CONTROL_VOL
+        extractionElutionVol = ELUTION_VOL
+        qpcrTemplateVol = TEMPLATE_VOL
+        
+        
+        
+        
         
     Else
         ' Get custom parameters
-        response = InputBox("Enter Initial Sample Volume (ml):", "Processing Parameters", "40")
+        response = InputBox("Enter Initial Sample Volume (ml):", "Processing Parameters", INITIAL_SAMPLE_VOL)
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         initialSampleVol = CDbl(response)
         
-        response = InputBox("Enter Concentrated Volume (ml):", "Processing Parameters", "15")
+        response = InputBox("Enter Concentrated Volume (ml):", "Processing Parameters", CONCENTRATED_VOL)
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         concentratedVol = CDbl(response)
         
-        response = InputBox("Enter Process Control Volume (ml):", "Processing Parameters", "0.1")
+        response = InputBox("Enter Process Control Volume (ml):", "Processing Parameters", PROCESS_CONTROL_VOL)
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         processControlVol = CDbl(response)
         
-        response = InputBox("Enter RNA Elution Volume (ul):", "Processing Parameters", "100")
+        response = InputBox("Enter RNA Elution Volume (ul):", "Processing Parameters", ELUTION_VOL)
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         extractionElutionVol = CDbl(response)
         
-        response = InputBox("Enter qPCR Template Volume (ul):", "Processing Parameters", "4")
+        response = InputBox("Enter qPCR Template Volume (ul):", "Processing Parameters", TEMPLATE_VOL)
         If response = "" Then proceed = False: GoTo ExitFunction
         If Not IsNumeric(response) Then proceed = False: GoTo ExitFunction
         qpcrTemplateVol = CDbl(response)
